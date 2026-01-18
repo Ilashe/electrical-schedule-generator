@@ -43,6 +43,11 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
 
   // Process each item from the quote
   for (const quoteItem of quoteData.items) {
+    // Skip non-electrical items
+    if (shouldSkipItem(quoteItem.partNumber, quoteItem.description)) {
+      continue
+    }
+
     // Look up equipment in master list
     const equipmentData = lookupEquipment(quoteItem.partNumber)
 
@@ -76,6 +81,11 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
 
     for (let i = 0; i < equipmentData.length; i++) {
       const equipment = equipmentData[i]
+      
+      // Skip sub-components that are non-electrical
+      if (equipment.is_sub_component && shouldSkipItem(equipment.part_num, equipment.description)) {
+        continue
+      }
       
       // Determine item numbering
       let itemNumber: string
@@ -166,6 +176,56 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     totalMotors: motorCount,
     totalAmps: parseFloat(totalAmps.toFixed(2)),
   }
+}
+
+/**
+ * Determine if item should be skipped (non-electrical)
+ */
+function shouldSkipItem(partNumber: string, description: string): boolean {
+  const descUpper = description.toUpperCase()
+  const partUpper = partNumber.toUpperCase()
+  
+  // Items to skip - no electrical requirements
+  const skipKeywords = [
+    'GRATING',
+    'FIBERGLASS GRATING',
+    'LADDER RACK',
+    'VACUUM TUBE',
+    'VACUUM HOSE',
+    'BRUSH', // Standalone brushes (not brush motors)
+    'CORE', // Standalone cores
+    'CURTAIN', // Mitter curtains
+    'STABILIZER KIT',
+    'GUIDE RAIL',
+  ]
+  
+  // Check if description contains any skip keywords
+  for (const keyword of skipKeywords) {
+    if (descUpper.includes(keyword)) {
+      // Exception: Don't skip if it has electrical components
+      if (descUpper.includes('MOTOR') || descUpper.includes('ELECTRIC') || descUpper.includes('SOLENOID')) {
+        return false
+      }
+      return true
+    }
+  }
+  
+  // Check part numbers that are non-electrical
+  const skipPartPrefixes = [
+    'FGPIT', // Fiberglass grating
+    'LR1', // Ladder rack (unless it has electrical)
+    'MC1E', // Mitter curtains
+    'WA1M-', // Brush/core only (no motor designation)
+    'CB1AMC-', // Contour cores
+  ]
+  
+  for (const prefix of skipPartPrefixes) {
+    if (partUpper.startsWith(prefix)) {
+      return true
+    }
+  }
+  
+  return false
 }
 
 /**
