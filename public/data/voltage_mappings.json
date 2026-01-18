@@ -1,0 +1,22 @@
+{
+  "USA": {
+    "3phase": 460,
+    "1phase": 120
+  },
+  "Canada": {
+    "3phase": 575,
+    "1phase": 120
+  },
+  "Australia": {
+    "3phase": 415,
+    "1phase": 240
+  },
+  "UK": {
+    "3phase": 415,
+    "1phase": 230
+  },
+  "Mexico": {
+    "3phase": 460,
+    "1phase": 127
+  }
+}
