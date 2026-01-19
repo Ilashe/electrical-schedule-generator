@@ -2,19 +2,19 @@ import ExcelJS from 'exceljs'
 import { Schedule } from './scheduleGenerator'
 
 /**
- * Create Excel file with electrical schedule
+ * Create Excel file with electrical schedule matching exact format
  */
 export async function createExcelFile(schedule: Schedule, country: string): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('Schedule')
 
-  // Set column widths
+  // Set column widths to match template
   worksheet.columns = [
-    { width: 5 },   // A
+    { width: 5 },   // A - Sequential #
     { width: 15 },  // B - Project Item #
-    { width: 3 },   // C
+    { width: 5 },   // C - Sub-letter
     { width: 20 },  // D - Part #
-    { width: 5 },   // E - #
+    { width: 5 },   // E - Quantity
     { width: 50 },  // F - Description
     { width: 8 },   // G - HP
     { width: 8 },   // H - Phase
@@ -32,11 +32,11 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
   // Title row
   worksheet.mergeCells('A1:Q1')
   const titleCell = worksheet.getCell('A1')
-  titleCell.value = `"${schedule.projectName}" - SCHEDULE`
+  titleCell.value = `${schedule.projectName.toUpperCase()} - SCHEDULE REV 0`
   titleCell.font = { bold: true, size: 14 }
-  titleCell.alignment = { horizontal: 'center', vertical: 'middle' }
+  titleCell.alignment = { horizontal: 'left', vertical: 'middle' }
 
-  // Subtitle row
+  // Subtitle row (Row 3)
   worksheet.mergeCells('A3:F3')
   const subtitleCell = worksheet.getCell('A3')
   subtitleCell.value = 'CAR  WASH  EQUIPMENT  LIST'
@@ -48,8 +48,8 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
   equipReqCell.font = { bold: true, size: 12 }
   equipReqCell.alignment = { horizontal: 'center' }
 
-  // Electrical header
-  worksheet.mergeCells('G5:Q5')
+  // Electrical/Air header (Row 5)
+  worksheet.mergeCells('G5:K5')
   const elecHeaderCell = worksheet.getCell('G5')
   elecHeaderCell.value = 'ELECTRICAL'
   elecHeaderCell.font = { bold: true }
@@ -59,6 +59,10 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
     pattern: 'solid',
     fgColor: { argb: 'FFD3D3D3' }
   }
+
+  worksheet.getCell('L5').value = 'AIR'
+  worksheet.getCell('L5').font = { bold: true }
+  worksheet.getCell('L5').alignment = { horizontal: 'center' }
 
   // Column headers (Row 6)
   const headers = [
@@ -85,30 +89,39 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
     }
   })
 
-  // Add data rows
+  // Add data rows starting at row 7
   let currentRow = 7
-  let lastMainItemRow = 7
+  let sequentialNumber = 1
 
   for (const item of schedule.items) {
     const row = worksheet.getRow(currentRow)
 
-    // Apply shading to main items (non-sub-components)
-    if (!item.isSubComponent) {
-      lastMainItemRow = currentRow
-      row.eachCell((cell) => {
-        cell.fill = {
-          type: 'pattern',
-          pattern: 'solid',
-          fgColor: { argb: 'FFF0F0F0' }
-        }
-      })
+    // Column A: Sequential number
+    row.getCell(1).value = sequentialNumber
+
+    // Column B: Project Item # (just the number part)
+    const projectItemMatch = item.itemNumber.match(/^\d+/)
+    row.getCell(2).value = projectItemMatch ? parseInt(projectItemMatch[0]) : item.itemNumber
+
+    // Column C: Sub-item letter(s) (A, AA, AB, etc.)
+    const subItemMatch = item.itemNumber.match(/\d+(.+)/)
+    row.getCell(3).value = subItemMatch ? subItemMatch[1] : ''
+
+    // Column D: Part #
+    row.getCell(4).value = item.partNumber
+
+    // Column E: Quantity - use motor label number if this is a motor, otherwise use quantity marker
+    if (item.motorLabel) {
+      const motorNum = item.motorLabel.replace('M-', '')
+      row.getCell(5).value = parseInt(motorNum)
+    } else {
+      row.getCell(5).value = item.quantity || '1'
     }
 
-    // Set values
-    row.getCell(2).value = item.itemNumber // Project Item #
-    row.getCell(4).value = item.partNumber  // Part #
-    row.getCell(5).value = item.quantity    // #
-    row.getCell(6).value = item.description // Description
+    // Column F: Description
+    row.getCell(6).value = item.description
+
+    // Columns G-Q: Equipment specs
     row.getCell(7).value = item.hp          // HP
     row.getCell(8).value = item.phase       // Phase
     row.getCell(9).value = item.volts       // Volts
@@ -121,7 +134,7 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
     row.getCell(16).value = item.galMin     // Gal/Min
     row.getCell(17).value = item.btuh       // BTUH
 
-    // Apply borders
+    // Apply borders to all cells
     row.eachCell((cell, colNumber) => {
       cell.border = {
         top: { style: 'thin' },
@@ -138,18 +151,13 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
       }
     })
 
-    // Bold main items
-    if (!item.isSubComponent) {
+    // Bold main items (those without sub-letters)
+    if (!subItemMatch || !subItemMatch[1]) {
       row.font = { bold: true }
     }
 
-    // Add motor label in column A if applicable
-    if (item.motorLabel) {
-      row.getCell(1).value = item.motorLabel
-      row.getCell(1).font = { italic: true, size: 9 }
-    }
-
     currentRow++
+    sequentialNumber++
   }
 
   // Add totals row
