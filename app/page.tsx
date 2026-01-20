@@ -70,35 +70,61 @@ export default function Home() {
 
   // Extract text from PDF using browser APIs via CDN
   const extractTextFromPDF = async (file: File): Promise<string> => {
-    const arrayBuffer = await file.arrayBuffer()
-    
-    // Load PDF.js from CDN (browser-compatible, no Node.js dependencies)
-    // @ts-ignore
-    if (!window.pdfjsLib) {
-      await new Promise((resolve, reject) => {
-        const script = document.createElement('script')
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
-        script.onload = resolve
-        script.onerror = reject
-        document.head.appendChild(script)
-      })
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      
+      // Load PDF.js from CDN (browser-compatible, no Node.js dependencies)
+      // @ts-ignore
+      if (!window.pdfjsLib) {
+        console.log('Loading PDF.js from CDN...')
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+          script.onload = () => {
+            console.log('PDF.js loaded successfully')
+            resolve(true)
+          }
+          script.onerror = () => {
+            console.error('Failed to load PDF.js')
+            reject(new Error('Failed to load PDF library'))
+          }
+          document.head.appendChild(script)
+        })
+      }
+      
+      // @ts-ignore
+      const pdfjsLib = window.pdfjsLib
+      if (!pdfjsLib) {
+        throw new Error('PDF.js library not available')
+      }
+      
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+      
+      console.log('Loading PDF document...')
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
+      console.log(`PDF loaded: ${pdf.numPages} pages`)
+      
+      let fullText = ''
+      
+      for (let i = 1; i <= pdf.numPages; i++) {
+        console.log(`Extracting page ${i}...`)
+        const page = await pdf.getPage(i)
+        const textContent = await page.getTextContent()
+        const pageText = textContent.items.map((item: any) => item.str).join(' ')
+        fullText += pageText + '\n'
+      }
+      
+      console.log(`Extracted ${fullText.length} characters from PDF`)
+      
+      if (fullText.length < 100) {
+        throw new Error('PDF appears to be empty or text extraction failed')
+      }
+      
+      return fullText
+    } catch (error) {
+      console.error('PDF extraction error:', error)
+      throw new Error(`Failed to extract text from PDF: ${error instanceof Error ? error.message : 'Unknown error'}`)
     }
-    
-    // @ts-ignore
-    const pdfjsLib = window.pdfjsLib
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
-    
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise
-    let fullText = ''
-    
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i)
-      const textContent = await page.getTextContent()
-      const pageText = textContent.items.map((item: any) => item.str).join(' ')
-      fullText += pageText + '\n'
-    }
-    
-    return fullText
   }
 
   const handleDownload = () => {

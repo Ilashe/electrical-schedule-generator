@@ -21,9 +21,12 @@ export interface QuoteData {
  */
 export function extractQuoteDataFromText(pdfText: string): QuoteData {
   try {
+    console.log('Parsing PDF text, length:', pdfText.length)
+    
     // Extract acknowledgment number
     const ackMatch = pdfText.match(/Acknowledgment Number:\s*(\d+)/)
     const acknowledgmentNumber = ackMatch ? ackMatch[1] : 'Unknown'
+    console.log('Acknowledgment Number:', acknowledgmentNumber)
 
     // Extract ship to information
     const shipToMatch = pdfText.match(/Ship To\s+([\s\S]*?)(?=\n\n|A\.V\.W\.|Customer PO)/i)
@@ -35,13 +38,24 @@ export function extractQuoteDataFromText(pdfText: string): QuoteData {
       const lines = shipToText.split('\n').map(l => l.trim()).filter(l => l)
       projectName = lines[0] || 'Unknown Project'
       shipToAddress = lines.join(', ')
+      console.log('Project Name:', projectName)
+      console.log('Ship To Address:', shipToAddress)
+    } else {
+      console.warn('Could not find Ship To information')
     }
 
     // Detect country from address
     const country = detectCountry(shipToAddress)
+    console.log('Detected Country:', country)
 
     // Extract equipment items from the table
     const items = extractEquipmentItems(pdfText)
+    console.log(`Extracted ${items.length} equipment items`)
+    
+    if (items.length === 0) {
+      console.error('No equipment items found in PDF!')
+      console.log('PDF Text Preview:', pdfText.substring(0, 500))
+    }
 
     return {
       acknowledgmentNumber,
@@ -63,6 +77,8 @@ function extractEquipmentItems(text: string): QuoteItem[] {
   const items: QuoteItem[] = []
   const lines = text.split('\n')
 
+  console.log(`Searching through ${lines.length} lines for equipment items...`)
+
   // Find the start of the item list (after "Item Description Qty")
   let inItemSection = false
   const partNumberPattern = /^([A-Z0-9-]+)\s/
@@ -73,15 +89,18 @@ function extractEquipmentItems(text: string): QuoteItem[] {
     // Start of items section
     if (line.includes('Item') && line.includes('Description') && line.includes('Qty')) {
       inItemSection = true
+      console.log(`Found item section start at line ${i}`)
       continue
     }
 
     // End of items section
     if (line.includes('Subtotal') || line.includes('****Back Room Equipment***')) {
       if (line.includes('****Back Room Equipment***')) {
+        console.log(`Found back room equipment marker at line ${i}`)
         // Continue to capture backroom equipment
         continue
       } else {
+        console.log(`Found subtotal at line ${i}, ending item extraction`)
         break
       }
     }
@@ -106,11 +125,16 @@ function extractEquipmentItems(text: string): QuoteItem[] {
             description,
             quantity,
           })
+          
+          if (items.length <=5) {
+            console.log(`Item ${items.length}: ${partNumber} - ${description}`)
+          }
         }
       }
     }
   }
 
+  console.log(`Total items extracted: ${items.length}`)
   return items
 }
 
