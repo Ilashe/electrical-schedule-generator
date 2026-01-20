@@ -1,11 +1,11 @@
 import { QuoteData } from './pdfParser'
-import masterListData from '@/public/data/master_list_complete.json'
-import voltageMap from '@/public/data/voltage_mappings.json'
+import masterListData from '../public/data/master_list_structured.json'
+import voltageMap from '../public/data/voltage_mappings.json'
 
 export interface ScheduleItem {
   itemNumber: string
   partNumber: string
-  quantity: string
+  quantity: string | number
   description: string
   hp: any
   phase: any
@@ -26,10 +26,43 @@ export interface Schedule {
   projectName: string
   acknowledgmentNumber: string
   country: string
-  voltage: any
+  voltage: {
+    '3phase': number
+    '1phase': number
+  }
   items: ScheduleItem[]
   totalMotors: number
   totalAmps: number
+}
+
+/**
+ * Items to exclude from electrical schedule (non-electrical items)
+ * These are the exact part numbers from quotes that should NOT appear in schedules
+ */
+const EXCLUDED_ITEMS = [
+  'RC3DG-UHMW',                    // Guide rails
+  'FGPIT-MOLD-K-4X12',             // Fiberglass grating
+  'FGPIT-CLM-K',                   // Fiberglass closed grating
+  'WA2F-0318',                     // Wrap stabilizer kit
+  'WA1M-72-510-5220-CORE',         // Cores only (no electrical)
+  'WA1M-00-510-5220-SS-CL-BL',     // Brushes only (no electrical)
+  'CB1AMA-50-13-S-CL',             // Upper contour brush cloth only
+  'CB1AMC-50-13',                  // Upper contour cores only
+  'CB1AMA-23-13-S-CL',             // Lower contour brush cloth only
+  'CB1AMC-23-13',                  // Lower contour cores only
+  'MC1E-12W79L-S-CL-AVW-BL',       // Mitter curtains
+  'MCC-460',                       // Motor control center (already included in main system)
+  'MCC-5-460-VFD',                 // VFD control center (already included in main system)
+  'DISPENSEIT-10-INJ-KIT',         // Injector kit only
+  'COMP-FLTR-REG-3-4IN',           // Filter/regulator (accessory)
+  'COMP-PRESS-GAUGE',              // Pressure gauge (accessory)
+]
+
+/**
+ * Check if an item should be excluded from the schedule
+ */
+function shouldExcludeItem(partNumber: string): boolean {
+  return EXCLUDED_ITEMS.some(excluded => partNumber.includes(excluded))
 }
 
 /**
@@ -39,25 +72,31 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
   const voltage = (voltageMap as any)[country] || (voltageMap as any)['USA']
   const scheduleItems: ScheduleItem[] = []
   let motorCount = 0
-  let mainItemNumber = 1
+  let projectItemNumber = 1
+
+  console.log(`Generating schedule for ${quoteData.items.length} quote items...`)
 
   // Process each item from the quote
   for (const quoteItem of quoteData.items) {
-    // Skip non-electrical items
-    if (shouldSkipItem(quoteItem.partNumber, quoteItem.description)) {
+    console.log(`\nProcessing: ${quoteItem.partNumber}`)
+    
+    // Check if this item should be excluded
+    if (shouldExcludeItem(quoteItem.partNumber)) {
+      console.log(`  ❌ EXCLUDED (non-electrical): ${quoteItem.partNumber}`)
       continue
     }
 
-    // Look up equipment in master list
-    const equipmentData = lookupEquipment(quoteItem.partNumber)
-
-    if (!equipmentData || equipmentData.length === 0) {
-      // Equipment not found - add placeholder
+    // Look up in master list
+    const masterItem = lookupMasterItem(quoteItem.partNumber)
+    
+    if (!masterItem) {
+      console.log(`  ⚠️  NOT FOUND in master list: ${quoteItem.partNumber}`)
+      // Add placeholder
       scheduleItems.push({
-        itemNumber: mainItemNumber.toString(),
+        itemNumber: projectItemNumber.toString(),
         partNumber: quoteItem.partNumber,
-        quantity: '#',
-        description: quoteItem.description + ' [NOT IN MASTER LIST - MANUAL ENTRY REQUIRED]',
+        quantity: quoteItem.quantity || '#',
+        description: `${quoteItem.description} [NOT IN MASTER LIST - VERIFY]`,
         hp: '-',
         phase: '-',
         volts: '-',
@@ -71,101 +110,74 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
         btuh: null,
         isSubComponent: false,
       })
-      mainItemNumber++
+      projectItemNumber++
       continue
     }
 
-    // Add main item and all sub-components
-    let subItemLetter = ''
-    let subSubItemLetter = ''
+    console.log(`  ✓ Found: ${masterItem.main.description}`)
+    console.log(`    Sub-components: ${masterItem.sub_components.length}`)
 
-    for (let i = 0; i < equipmentData.length; i++) {
-      const equipment = equipmentData[i]
-      
-      // Skip sub-components that are non-electrical
-      if (equipment.is_sub_component && shouldSkipItem(equipment.part_num, equipment.description)) {
-        continue
-      }
-      
-      // Determine item numbering
-      let itemNumber: string
-      if (i === 0) {
-        // Main item
-        itemNumber = mainItemNumber.toString()
-      } else {
-        // Sub-item
-        if (equipment.description.startsWith('--')) {
-          // Sub-sub item (e.g., 5AA, 5AB)
-          if (subSubItemLetter === '') {
-            subSubItemLetter = 'A'
-          } else {
-            subSubItemLetter = String.fromCharCode(subSubItemLetter.charCodeAt(0) + 1)
-          }
-          itemNumber = mainItemNumber + subItemLetter + subSubItemLetter
-        } else {
-          // Regular sub-item (e.g., 5A, 5B)
-          if (subItemLetter === '') {
-            subItemLetter = 'A'
-          } else {
-            subItemLetter = String.fromCharCode(subItemLetter.charCodeAt(0) + 1)
-          }
-          subSubItemLetter = '' // Reset sub-sub counter
-          itemNumber = mainItemNumber + subItemLetter
-        }
-      }
+    // Add main item
+    const mainItem = createScheduleItem(
+      masterItem.main,
+      projectItemNumber.toString(),
+      '',
+      quoteItem.quantity || '#',
+      voltage,
+      false
+    )
+    
+    scheduleItems.push(mainItem)
 
-      // Apply voltage based on country
-      let volts = equipment.volts
-      let amps = equipment.amps
-
-      if (equipment.phase === 3 || equipment.phase === '3') {
-        volts = voltage['3phase']
-      } else if (equipment.phase === 1 || equipment.phase === '1') {
-        volts = voltage['1phase']
-      }
-
-      // Recalculate amps if voltage changed (rough approximation)
-      if (equipment.volts && equipment.amps && volts !== equipment.volts) {
-        const originalPower = equipment.volts * equipment.amps
-        amps = (originalPower / volts).toFixed(2)
-      }
-
-      // Check if this is a motor
-      let motorLabel: string | undefined
-      if (isMotor(equipment.description, equipment.hp)) {
-        motorCount++
-        motorLabel = `M-${motorCount}`
-      }
-
-      scheduleItems.push({
-        itemNumber,
-        partNumber: equipment.part_num,
-        quantity: i === 0 ? '#' : '',
-        description: equipment.description,
-        hp: equipment.hp || '-',
-        phase: equipment.phase || '-',
-        volts: volts || '-',
-        amps: amps || '-',
-        cb: equipment.cb || '-',
-        port: equipment.port,
-        cold: equipment.cold,
-        hot: equipment.hot,
-        reclaim: equipment.reclaim,
-        galMin: equipment.gal_min,
-        btuh: equipment.btuh,
-        isSubComponent: equipment.is_sub_component,
-        motorLabel,
-      })
+    if (isMotor(mainItem)) {
+      motorCount++
+      mainItem.motorLabel = `M-${motorCount}`
     }
 
-    mainItemNumber++
+    // Add sub-components
+    let subLetter = 'A'
+    let subSubLetter = ''
+    
+    for (const subComp of masterItem.sub_components) {
+      let subItemLetter = ''
+      
+      if (subComp.description.startsWith('--')) {
+        if (!subSubLetter) subSubLetter = 'A'
+        subItemLetter = subLetter + subSubLetter
+        subSubLetter = String.fromCharCode(subSubLetter.charCodeAt(0) + 1)
+      } else {
+        subItemLetter = subLetter
+        subLetter = String.fromCharCode(subLetter.charCodeAt(0) + 1)
+        subSubLetter = ''
+      }
+      
+      const subItem = createScheduleItem(
+        subComp,
+        projectItemNumber.toString(),
+        subItemLetter,
+        '',
+        voltage,
+        true
+      )
+      
+      scheduleItems.push(subItem)
+      
+      if (isMotor(subItem)) {
+        motorCount++
+        subItem.motorLabel = `M-${motorCount}`
+        subItem.quantity = motorCount
+      }
+    }
+
+    projectItemNumber++
   }
 
-  // Calculate total amps
   const totalAmps = scheduleItems.reduce((sum, item) => {
-    const amps = parseFloat(item.amps as string)
+    const amps = parseFloat(String(item.amps))
     return sum + (isNaN(amps) ? 0 : amps)
   }, 0)
+
+  console.log(`\n✓ Schedule: ${scheduleItems.length} rows, ${motorCount} motors, ${totalAmps.toFixed(2)} amps`)
 
   return {
     projectName: quoteData.projectName,
@@ -178,97 +190,69 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
   }
 }
 
-/**
- * Determine if item should be skipped (non-electrical)
- */
-function shouldSkipItem(partNumber: string, description: string): boolean {
-  const descUpper = description.toUpperCase()
-  const partUpper = partNumber.toUpperCase()
+function lookupMasterItem(partNumber: string): any {
+  if ((masterListData as any)[partNumber]) {
+    return (masterListData as any)[partNumber]
+  }
   
-  // Items to skip - no electrical requirements
-  const skipKeywords = [
-    'GRATING',
-    'FIBERGLASS GRATING',
-    'LADDER RACK',
-    'VACUUM TUBE',
-    'VACUUM HOSE',
-    'BRUSH', // Standalone brushes (not brush motors)
-    'CORE', // Standalone cores
-    'CURTAIN', // Mitter curtains
-    'STABILIZER KIT',
-    'GUIDE RAIL',
-  ]
+  const basePartNum = partNumber.split('-')[0]
   
-  // Check if description contains any skip keywords
-  for (const keyword of skipKeywords) {
-    if (descUpper.includes(keyword)) {
-      // Exception: Don't skip if it has electrical components
-      if (descUpper.includes('MOTOR') || descUpper.includes('ELECTRIC') || descUpper.includes('SOLENOID')) {
-        return false
-      }
-      return true
+  for (const key of Object.keys(masterListData as any)) {
+    if (key.startsWith(basePartNum) || partNumber.startsWith(key)) {
+      console.log(`    Matched ${partNumber} to ${key}`)
+      return (masterListData as any)[key]
     }
   }
   
-  // Check part numbers that are non-electrical
-  const skipPartPrefixes = [
-    'FGPIT', // Fiberglass grating
-    'LR1', // Ladder rack (unless it has electrical)
-    'MC1E', // Mitter curtains
-    'WA1M-', // Brush/core only (no motor designation)
-    'CB1AMC-', // Contour cores
-  ]
-  
-  for (const prefix of skipPartPrefixes) {
-    if (partUpper.startsWith(prefix)) {
-      return true
-    }
-  }
-  
-  return false
+  return null
 }
 
-/**
- * Look up equipment and its sub-components in master list
- */
-function lookupEquipment(partNumber: string): any[] {
-  const results: any[] = []
-  let foundMain = false
-  let collectingSubComponents = false
-
-  for (const item of masterListData as any[]) {
-    if (item.part_num === partNumber && !item.is_sub_component) {
-      // Found main equipment
-      results.push(item)
-      foundMain = true
-      collectingSubComponents = true
-    } else if (collectingSubComponents && item.is_sub_component && item.parent === partNumber) {
-      // This is a sub-component of the main equipment
-      results.push(item)
-    } else if (collectingSubComponents && !item.is_sub_component) {
-      // Reached next main component, stop collecting
-      break
-    }
+function createScheduleItem(
+  masterData: any,
+  projectItemNum: string,
+  subLetter: string,
+  quantity: string | number,
+  voltage: any,
+  isSubComponent: boolean
+): ScheduleItem {
+  let volts = masterData.volts
+  let amps = masterData.amps
+  
+  if (masterData.phase === 3 || masterData.phase === '3') {
+    volts = voltage['3phase']
+  } else if (masterData.phase === 1 || masterData.phase === '1') {
+    volts = voltage['1phase']
   }
-
-  return results
+  
+  if (masterData.volts && masterData.amps && volts !== masterData.volts) {
+    const power = masterData.volts * masterData.amps
+    amps = (power / volts).toFixed(2)
+  }
+  
+  return {
+    itemNumber: subLetter ? `${projectItemNum}${subLetter}` : projectItemNum,
+    partNumber: masterData.part_num,
+    quantity: isSubComponent ? (quantity || '') : (quantity || '#'),
+    description: masterData.description,
+    hp: masterData.hp || '-',
+    phase: masterData.phase || '-',
+    volts: volts || '-',
+    amps: amps || '-',
+    cb: masterData.cb || '-',
+    port: masterData.port,
+    cold: masterData.cold,
+    hot: masterData.hot,
+    reclaim: masterData.reclaim,
+    galMin: masterData.gal_min,
+    btuh: masterData.btuh,
+    isSubComponent,
+  }
 }
 
-/**
- * Determine if item is a motor
- */
-function isMotor(description: string, hp: any): boolean {
-  const descUpper = description.toUpperCase()
+function isMotor(item: ScheduleItem): boolean {
+  const desc = item.description.toUpperCase()
+  const hasMotorKeyword = desc.includes('MOTOR') || desc.includes('GEARMOTOR')
+  const hasHP = item.hp && item.hp !== '-' && !isNaN(parseFloat(String(item.hp)))
   
-  // Check if description contains motor keywords
-  if (descUpper.includes('-MOTOR') || descUpper.includes('MOTOR')) {
-    return true
-  }
-
-  // Check if it has HP value (and it's not a dash)
-  if (hp && hp !== '-' && !isNaN(parseFloat(hp))) {
-    return true
-  }
-
-  return false
+  return hasMotorKeyword || hasHP
 }
