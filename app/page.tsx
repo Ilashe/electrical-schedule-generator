@@ -5,6 +5,7 @@ import FileUpload from '@/components/FileUpload'
 import CountrySelector from '@/components/CountrySelector'
 import ProcessingStatus from '@/components/ProcessingStatus'
 import ResultsDisplay from '@/components/ResultsDisplay'
+import SchedulePreview from '@/components/SchedulePreview'
 
 export default function Home() {
   const [pdfFile, setPdfFile] = useState<File | null>(null)
@@ -13,6 +14,7 @@ export default function Home() {
   const [progress, setProgress] = useState(0)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
+  const [showPreview, setShowPreview] = useState(false)
 
   const handleFileSelect = (file: File) => {
     setPdfFile(file)
@@ -57,9 +59,23 @@ export default function Home() {
       setProgress(80)
       const data = await response.json()
 
+      // Add preview data (first 50 items)
+      data.preview = data.items?.slice(0, 50).map((item: any, index: number) => ({
+        itemNumber: item.itemNumber,
+        partNumber: item.partNumber,
+        description: item.description,
+        hp: item.hp,
+        phase: item.phase,
+        volts: item.volts,
+        amps: item.amps,
+        motorLabel: item.motorLabel,
+        isMain: !item.isSubComponent,
+      }))
+
       // Step 4: Complete (100%)
       setProgress(100)
       setResult(data)
+      setShowPreview(true) // Show preview modal
 
     } catch (err: any) {
       setError(err.message || 'An error occurred while processing')
@@ -239,6 +255,18 @@ export default function Home() {
           </p>
         </div>
       </div>
+
+      {/* Schedule Preview Modal */}
+      {showPreview && result && (
+        <SchedulePreview
+          data={result}
+          onDownload={() => {
+            setShowPreview(false)
+            handleDownload()
+          }}
+          onClose={() => setShowPreview(false)}
+        />
+      )}
     </main>
   )
 }

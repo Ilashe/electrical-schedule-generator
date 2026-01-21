@@ -40,6 +40,9 @@ export async function POST(request: NextRequest) {
       voltage: `${schedule.voltage['3phase']}V / ${schedule.voltage['1phase']}V`,
       filename,
       excelData: base64Excel,
+      notFoundItems: schedule.notFoundItems,
+      excludedItems: schedule.excludedItems,
+      items: schedule.items,
     })
 
   } catch (error: any) {
