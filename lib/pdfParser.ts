@@ -1,5 +1,4 @@
-// Browser-compatible PDF parser
-// Handles PDF text that comes as continuous space-separated text
+// Robust PDF parser that works with ANY sales order format
 
 export interface QuoteItem {
   partNumber: string
@@ -43,19 +42,17 @@ export function extractQuoteDataFromText(pdfText: string): QuoteData {
 }
 
 /**
- * Extract from Electrical Schedule PDF (like EQ-1-1115)
+ * Extract from Electrical Schedule PDF
  */
 function extractFromElectricalSchedule(text: string): QuoteData {
   console.log('Extracting from electrical schedule format...')
   
-  // Extract project info
   const projectMatch = text.match(/PROJECT.*?([A-Z\s]+CAR\s+WASH)/i)
   const projectName = projectMatch ? projectMatch[1].trim() : 'Unknown Project'
   
   const ackMatch = text.match(/AVW PROJECT #.*?([A-Z0-9-]+)/i)
   const acknowledgmentNumber = ackMatch ? ackMatch[1] : 'Unknown'
   
-  // Extract address for country detection
   const addressMatch = text.match(/(\d+.*?(?:USA|US|CANADA|CA))/is)
   const shipToAddress = addressMatch ? addressMatch[1] : ''
   const country = detectCountry(shipToAddress)
@@ -64,30 +61,161 @@ function extractFromElectricalSchedule(text: string): QuoteData {
   console.log('Project #:', acknowledgmentNumber)
   console.log('Country:', country)
   
-  // Extract main equipment items (those without letter suffixes)
+  const items = extractEquipmentItems(text)
+  console.log(`Extracted ${items.length} equipment items from schedule`)
+  
+  return {
+    acknowledgmentNumber,
+    projectName,
+    shipToAddress,
+    country,
+    items,
+  }
+}
+
+/**
+ * Extract from Sales Order/Quote PDF - ROBUST LOGIC
+ * Works with ANY sales order format
+ */
+function extractFromSalesOrder(text: string): QuoteData {
+  console.log('Extracting from sales order format...')
+  
+  // Extract acknowledgment/quote number
+  const ackMatch = text.match(/(?:Acknowledgment|Quote)\s+Number:\s*(\d+)/i)
+  const acknowledgmentNumber = ackMatch ? ackMatch[1] : 'Unknown'
+  console.log('Quote Number:', acknowledgmentNumber)
+
+  // Extract ship to information
+  const shipToMatch = text.match(/Ship\s+To\s+([^A]+?)(?=A\.V\.W\.|Customer PO|Terms of Sale)/is)
+  let shipToAddress = ''
+  let projectName = ''
+
+  if (shipToMatch) {
+    const shipToText = shipToMatch[1].trim()
+    const lines = shipToText.split(/\n/).map(l => l.trim()).filter(l => l)
+    projectName = lines[0] || 'Unknown Project'
+    shipToAddress = shipToText.replace(/\s+/g, ' ')
+    console.log('Project Name:', projectName)
+    console.log('Ship To:', shipToAddress)
+  }
+
+  const country = detectCountry(shipToAddress)
+  console.log('Detected Country:', country)
+
+  // Extract equipment items using ROBUST logic
+  const items = extractItemsFromSalesOrder(text)
+  console.log(`Extracted ${items.length} equipment items`)
+  
+  if (items.length === 0) {
+    console.error('No equipment items found in sales order!')
+    console.log('PDF Text Preview:', text.substring(0, 1000))
+  }
+
+  return {
+    acknowledgmentNumber,
+    projectName,
+    shipToAddress,
+    country,
+    items,
+  }
+}
+
+/**
+ * ROBUST extraction of items from sales order
+ * Strategy: Split by lines ending with "T" (total marker)
+ * Each item block ends with: QTY PRICE TOTALT
+ */
+function extractItemsFromSalesOrder(text: string): QuoteItem[] {
   const items: QuoteItem[] = []
   
-  // Find the equipment table section
+  console.log('Using robust sales order extraction...')
+  
+  // Split text into blocks ending with T (total marker)
+  // Pattern: number followed by T at end of line
+  const itemBlocks = text.split(/(?<=\d+\.[\d]+T)\s*\n/);
+  
+  for (const block of itemBlocks) {
+    const trimmedBlock = block.trim()
+    
+    // Skip if empty, header, or subtotal
+    if (!trimmedBlock || 
+        trimmedBlock.includes('Item Description Qty') ||
+        trimmedBlock.includes('Subtotal') ||
+        trimmedBlock.includes('Page ')) {
+      continue
+    }
+    
+    // Check if block ends with pattern: QTY PRICE TOTALT
+    const match = trimmedBlock.match(/(\d+)\s+([\d,]+\.[\d]+)\s+([\d,]+\.[\d]+)T\s*$/)
+    
+    if (!match) {
+      continue
+    }
+    
+    const quantity = parseInt(match[1])
+    
+    // Extract part number - first word of the block
+    // Part numbers: letters, numbers, dashes, dots, underscores
+    const partMatch = trimmedBlock.match(/^([A-Z0-9][A-Z0-9\-\._]*)/)
+    
+    if (!partMatch) {
+      continue
+    }
+    
+    const partNumber = partMatch[1]
+    
+    // Description is between part number and qty/price/total
+    const descriptionText = trimmedBlock.substring(partNumber.length, match.index).trim()
+    
+    // Clean up description (remove extra whitespace, newlines)
+    const description = descriptionText.replace(/\s+/g, ' ').trim()
+    
+    items.push({
+      partNumber,
+      description,
+      quantity,
+    })
+    
+    if (items.length <= 20) {
+      console.log(`  Item ${items.length}: ${partNumber} (Qty: ${quantity})`)
+    }
+  }
+  
+  console.log(`Total items extracted: ${items.length}`)
+  
+  // Log duplicates
+  const partCounts: { [key: string]: number } = {}
+  items.forEach(item => {
+    partCounts[item.partNumber] = (partCounts[item.partNumber] || 0) + 1
+  })
+  
+  const duplicates = Object.entries(partCounts).filter(([_, count]) => count > 1)
+  if (duplicates.length > 0) {
+    console.log('Duplicate items found (all included):')
+    duplicates.forEach(([part, count]) => {
+      console.log(`  - ${part}: appears ${count} times`)
+    })
+  }
+  
+  return items
+}
+
+/**
+ * Extract equipment items from electrical schedule table
+ */
+function extractEquipmentItems(text: string): QuoteItem[] {
+  const items: QuoteItem[] = []
+  
   const tableMatch = text.match(/PROJECT ITEM #.*?TOTAL/s)
   if (!tableMatch) {
     console.error('Could not find equipment table')
-    return {
-      acknowledgmentNumber,
-      projectName,
-      shipToAddress,
-      country,
-      items: [],
-    }
+    return items
   }
   
   const tableText = tableMatch[0]
   const lines = tableText.split('\n')
   
   for (const line of lines) {
-    // Pattern: sequential# projectItem# partNum quantity description...
-    // Main items have numeric-only project item # (1, 2, 3, 4...)
-    // Sub-items have letters (2A, 2B, 4AA, 5C...)
-    
     const match = line.match(/^\s*\d+\s+(\d+)\s+([A-Z0-9-]+)\s+(\d+)\s+(.+?)(?:\s+-\s+|\s+\d+\s+|$)/)
     
     if (match) {
@@ -109,104 +237,6 @@ function extractFromElectricalSchedule(text: string): QuoteData {
     }
   }
   
-  console.log(`Extracted ${items.length} main equipment items from schedule`)
-  
-  return {
-    acknowledgmentNumber,
-    projectName,
-    shipToAddress,
-    country,
-    items,
-  }
-}
-
-/**
- * Extract from Sales Order/Quote PDF (like Quote #38388)
- */
-function extractFromSalesOrder(text: string): QuoteData {
-  console.log('Extracting from sales order format...')
-  
-  // Extract acknowledgment number
-  const ackMatch = text.match(/Acknowledgment Number:\s*(\d+)/)
-  const acknowledgmentNumber = ackMatch ? ackMatch[1] : 'Unknown'
-  console.log('Acknowledgment Number:', acknowledgmentNumber)
-
-  // Extract ship to information
-  const shipToMatch = text.match(/Ship To\s+([^A]+?)(?=A\.V\.W\.|Customer PO)/i)
-  let shipToAddress = ''
-  let projectName = ''
-
-  if (shipToMatch) {
-    const shipToText = shipToMatch[1].trim()
-    const parts = shipToText.split(/\s{2,}/)
-    projectName = parts[0] || 'Unknown Project'
-    shipToAddress = shipToText.replace(/\s+/g, ' ')
-    console.log('Project Name:', projectName)
-    console.log('Ship To Address:', shipToAddress)
-  }
-
-  const country = detectCountry(shipToAddress)
-  console.log('Detected Country:', country)
-
-  // Extract equipment items
-  const items = extractEquipmentItems(text)
-  console.log(`Extracted ${items.length} equipment items`)
-  
-  if (items.length === 0) {
-    console.error('No equipment items found in PDF!')
-    console.log('PDF Text Preview:', text.substring(0, 1000))
-  }
-
-  return {
-    acknowledgmentNumber,
-    projectName,
-    shipToAddress,
-    country,
-    items,
-  }
-}
-
-/**
- * Extract equipment items from continuous PDF text
- */
-function extractEquipmentItems(text: string): QuoteItem[] {
-  const items: QuoteItem[] = []
-  
-  console.log('Extracting equipment items from continuous text...')
-  
-  // Find the section between "Item Description Qty" and "Subtotal"
-  const itemSectionMatch = text.match(/Item\s+Description\s+Qty\s+Unit Price\s+Total\s+(.*?)(?=Subtotal|Page \d)/s)
-  
-  if (!itemSectionMatch) {
-    console.error('Could not find item section in PDF')
-    return items
-  }
-  
-  const itemSection = itemSectionMatch[1]
-  console.log('Item section length:', itemSection.length)
-  
-  // Pattern: PART_NUMBER Description... Quantity Price Total
-  // Example: RC4 Roller Correlator, 2-1/2" Sch 10 Rollers, Frames, SS 1 5,385.00 5,385.00T
-  const itemPattern = /([A-Z0-9-]+)\s+(.+?)\s+(\d+)\s+[\d,]+\.[\d]+\s+[\d,]+\.[\d]+T/g
-  
-  let match
-  while ((match = itemPattern.exec(itemSection)) !== null) {
-    const partNumber = match[1]
-    const description = match[2].trim()
-    const quantity = parseInt(match[3])
-    
-    items.push({
-      partNumber,
-      description,
-      quantity,
-    })
-    
-    if (items.length <= 10) {
-      console.log(`Item ${items.length}: ${partNumber} - ${description.substring(0, 50)}`)
-    }
-  }
-  
-  console.log(`Total items extracted: ${items.length}`)
   return items
 }
 
@@ -228,6 +258,5 @@ function detectCountry(address: string): string {
     return 'Mexico'
   }
 
-  // Default to USA
   return 'USA'
 }
