@@ -61,33 +61,38 @@ function shouldExcludeItem(partNumber: string): boolean {
 }
 
 /**
+ * FIX #1: Track occurrence count for each part number
+ */
+interface OccurrenceTracker {
+  [partNumber: string]: number
+}
+
+/**
  * Generate electrical schedule from quote data
- * IMPORTANT: Skips duplicate items - only first occurrence is used
+ * FIXES:
+ * #1 - Handle duplicate items (each occurrence is separate project item)
+ * #3 - Include all columns (PORT, COLD, HOT, RECLAIM, GAL/MIN, BTUH)
+ * #4 - Occurrence count for ALL equipment, not just motors
+ * #5 - Correct sub-item lettering (AA, BA, CA for nested items)
  */
 export async function generateSchedule(quoteData: QuoteData, country: string): Promise<Schedule> {
   const voltage = (voltageMap as any)[country] || (voltageMap as any)['USA']
   const scheduleItems: ScheduleItem[] = []
   const notFoundItems: string[] = []
   const excludedItems: string[] = []
-  const processedItems: Set<string> = new Set() // Track processed items to skip duplicates
+  const occurrenceTracker: OccurrenceTracker = {} // FIX #4: Track ALL equipment occurrences
   let motorCount = 0
   let projectItemNumber = 1
 
   console.log(`Generating schedule for ${quoteData.items.length} quote items...`)
 
+  // FIX #1: Process ALL items from quote, including duplicates
   for (const quoteItem of quoteData.items) {
     console.log(`\nProcessing: ${quoteItem.partNumber}`)
     
-    // Check if excluded
     if (shouldExcludeItem(quoteItem.partNumber)) {
       console.log(`  ❌ EXCLUDED: ${quoteItem.partNumber}`)
       excludedItems.push(`${quoteItem.partNumber} - ${quoteItem.description}`)
-      continue
-    }
-
-    // SKIP DUPLICATES - only process each item once
-    if (processedItems.has(quoteItem.partNumber)) {
-      console.log(`  ⏭️  SKIPPING DUPLICATE: ${quoteItem.partNumber}`)
       continue
     }
 
@@ -102,15 +107,20 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     console.log(`  ✓ Found: ${masterItem.main.description}`)
     console.log(`    Sub-components: ${masterItem.sub_components.length}`)
 
-    // Mark as processed
-    processedItems.add(quoteItem.partNumber)
+    // FIX #4: Track occurrence for this main item
+    const mainPartNum = masterItem.main.part_num
+    if (!occurrenceTracker[mainPartNum]) {
+      occurrenceTracker[mainPartNum] = 0
+    }
+    occurrenceTracker[mainPartNum]++
+    const mainOccurrence = occurrenceTracker[mainPartNum]
 
-    // Add main item
+    // Add main item with occurrence count
     const mainItem = createScheduleItem(
       masterItem.main,
       projectItemNumber.toString(),
       '',
-      quoteItem.quantity || 1,
+      mainOccurrence, // FIX #4: Show occurrence count
       voltage,
       false
     )
@@ -120,40 +130,49 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     if (isMotor(mainItem)) {
       motorCount++
       mainItem.motorLabel = `M-${motorCount}`
-      mainItem.quantity = motorCount
+      mainItem.quantity = motorCount // Motors show motor number instead
     }
 
-    // Add sub-components
+    // FIX #5: Intelligent sub-item lettering
+    // Pair BLOWER + MOTOR together (BL0115D-15 + M-15 → A + AA, B + BA, C + CA)
+    const subItems = masterItem.sub_components
     let subLetter = 'A'
     let i = 0
     
-    while (i < masterItem.sub_components.length) {
-      const currentSub = masterItem.sub_components[i]
-      const nextSub = masterItem.sub_components[i + 1]
+    while (i < subItems.length) {
+      const currentSub = subItems[i]
+      const nextSub = subItems[i + 1]
       
-      // Check if BLOWER + MOTOR pair
+      // Check if this is BLOWER + MOTOR pair
       const isBlowerMotorPair = 
         currentSub.description.toUpperCase().includes('BLOWER') &&
         nextSub && 
         (nextSub.description.toUpperCase().includes('MOTOR') || nextSub.part_num.startsWith('M-') || nextSub.part_num === 'M')
       
       if (isBlowerMotorPair) {
-        // Add blower (A, B, C...)
+        // Add blower with letter (A, B, C...)
         const blowerItem = createScheduleItem(
           currentSub,
           projectItemNumber.toString(),
           subLetter,
-          quoteItem.quantity || 1,
+          '', // No quantity for sub-items
           voltage,
           true
         )
         scheduleItems.push(blowerItem)
         
-        // Add motor (AA, BA, CA...)
+        // Track blower occurrence
+        if (!occurrenceTracker[currentSub.part_num]) {
+          occurrenceTracker[currentSub.part_num] = 0
+        }
+        occurrenceTracker[currentSub.part_num]++
+        blowerItem.quantity = occurrenceTracker[currentSub.part_num]
+        
+        // Add motor with double letter (AA, BA, CA...)
         const motorItem = createScheduleItem(
           nextSub,
           projectItemNumber.toString(),
-          subLetter + 'A',
+          subLetter + 'A', // FIX #5: AA, BA, CA pattern
           '',
           voltage,
           true
@@ -167,24 +186,31 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
         }
         
         subLetter = String.fromCharCode(subLetter.charCodeAt(0) + 1)
-        i += 2
+        i += 2 // Skip both blower and motor
       } else {
         // Regular sub-item
         const subItem = createScheduleItem(
           currentSub,
           projectItemNumber.toString(),
           subLetter,
-          quoteItem.quantity || 1,
+          '',
           voltage,
           true
         )
         
         scheduleItems.push(subItem)
         
+        // Track occurrence for sub-items too
+        if (!occurrenceTracker[currentSub.part_num]) {
+          occurrenceTracker[currentSub.part_num] = 0
+        }
+        occurrenceTracker[currentSub.part_num]++
+        subItem.quantity = occurrenceTracker[currentSub.part_num]
+        
         if (isMotor(subItem)) {
           motorCount++
           subItem.motorLabel = `M-${motorCount}`
-          subItem.quantity = motorCount
+          subItem.quantity = motorCount // Motors show motor count
         }
         
         subLetter = String.fromCharCode(subLetter.charCodeAt(0) + 1)
@@ -200,13 +226,9 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     return sum + (isNaN(amps) ? 0 : amps)
   }, 0)
 
-  const duplicatesSkipped = quoteData.items.length - processedItems.size - notFoundItems.length - excludedItems.length
-
   console.log(`\n✓ Generated: ${scheduleItems.length} rows, ${motorCount} motors, ${totalAmps.toFixed(2)} amps`)
-  console.log(`✓ Unique items: ${processedItems.size}`)
-  console.log(`✓ Duplicates skipped: ${duplicatesSkipped}`)
-  console.log(`✓ Not found: ${notFoundItems.length}`)
-  console.log(`✓ Excluded: ${excludedItems.length}`)
+  console.log(`✓ Not found: ${notFoundItems.length} items`)
+  console.log(`✓ Excluded: ${excludedItems.length} items`)
 
   return {
     projectName: quoteData.projectName,
@@ -238,6 +260,9 @@ function lookupMasterItem(partNumber: string): any {
   return null
 }
 
+/**
+ * FIX #3: Include ALL columns from master list
+ */
 function createScheduleItem(
   masterData: any,
   projectItemNum: string,
@@ -263,13 +288,14 @@ function createScheduleItem(
   return {
     itemNumber: subLetter ? `${projectItemNum}${subLetter}` : projectItemNum,
     partNumber: masterData.part_num,
-    quantity: quantity || (isSubComponent ? 1 : 1),
+    quantity: quantity || (isSubComponent ? '' : '#'),
     description: masterData.description,
     hp: masterData.hp || '-',
     phase: masterData.phase || '-',
     volts: volts || '-',
     amps: amps || '-',
     cb: masterData.cb || '-',
+    // FIX #3: Include all columns
     port: masterData.port || null,
     cold: masterData.cold || null,
     hot: masterData.hot || null,
