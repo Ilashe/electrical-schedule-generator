@@ -39,7 +39,7 @@ export interface Schedule {
 
 const EXCLUDED_ITEMS = [
   'RC3DG-UHMW',
-  'FGPIT-MOLD-K-4X12',
+  'FGPIT-MOLD-K',
   'FGPIT-CLM-K',
   'WA2F-0318',
   'WA1M-72-510-5220-CORE',
@@ -54,41 +54,35 @@ const EXCLUDED_ITEMS = [
   'DISPENSEIT-10-INJ-KIT',
   'COMP-FLTR-REG-3-4IN',
   'COMP-PRESS-GAUGE',
+  'RB1AMC-23-13',  // Cores
+  'RB1AMA-23-13',  // Brushes
+  'TR1HB-82',      // Cores
+  'TR1-BUN-RED',   // Brushes
 ]
 
 function shouldExcludeItem(partNumber: string): boolean {
   return EXCLUDED_ITEMS.some(excluded => partNumber.includes(excluded))
 }
 
-/**
- * FIX #1: Track occurrence count for each part number
- */
-interface OccurrenceTracker {
-  [partNumber: string]: number
-}
-
-/**
- * Generate electrical schedule from quote data
- * FIXES:
- * #1 - Handle duplicate items (each occurrence is separate project item)
- * #3 - Include all columns (PORT, COLD, HOT, RECLAIM, GAL/MIN, BTUH)
- * #4 - Occurrence count for ALL equipment, not just motors
- * #5 - Correct sub-item lettering (AA, BA, CA for nested items)
- */
 export async function generateSchedule(quoteData: QuoteData, country: string): Promise<Schedule> {
   const voltage = (voltageMap as any)[country] || (voltageMap as any)['USA']
   const scheduleItems: ScheduleItem[] = []
   const notFoundItems: string[] = []
   const excludedItems: string[] = []
-  const occurrenceTracker: OccurrenceTracker = {} // FIX #4: Track ALL equipment occurrences
+  const processedParts: Set<string> = new Set() // FIX #1: Track to skip duplicates
   let motorCount = 0
   let projectItemNumber = 1
 
   console.log(`Generating schedule for ${quoteData.items.length} quote items...`)
 
-  // FIX #1: Process ALL items from quote, including duplicates
   for (const quoteItem of quoteData.items) {
     console.log(`\nProcessing: ${quoteItem.partNumber}`)
+    
+    // FIX #1: Skip duplicates - only first occurrence
+    if (processedParts.has(quoteItem.partNumber)) {
+      console.log(`  ⏭️  SKIPPING DUPLICATE: ${quoteItem.partNumber}`)
+      continue
+    }
     
     if (shouldExcludeItem(quoteItem.partNumber)) {
       console.log(`  ❌ EXCLUDED: ${quoteItem.partNumber}`)
@@ -96,6 +90,7 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
       continue
     }
 
+    // FIX #6: Better master list lookup
     const masterItem = lookupMasterItem(quoteItem.partNumber)
     
     if (!masterItem) {
@@ -107,34 +102,29 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     console.log(`  ✓ Found: ${masterItem.main.description}`)
     console.log(`    Sub-components: ${masterItem.sub_components.length}`)
 
-    // FIX #4: Track occurrence for this main item
-    const mainPartNum = masterItem.main.part_num
-    if (!occurrenceTracker[mainPartNum]) {
-      occurrenceTracker[mainPartNum] = 0
-    }
-    occurrenceTracker[mainPartNum]++
-    const mainOccurrence = occurrenceTracker[mainPartNum]
+    // Mark as processed
+    processedParts.add(quoteItem.partNumber)
 
-    // Add main item with occurrence count
+    // Add main item
     const mainItem = createScheduleItem(
       masterItem.main,
       projectItemNumber.toString(),
       '',
-      mainOccurrence, // FIX #4: Show occurrence count
+      quoteItem.quantity || 1,  // FIX #4: Use quote quantity
       voltage,
       false
     )
     
     scheduleItems.push(mainItem)
 
+    // FIX #4: Motors get motor label, but keep original quantity
     if (isMotor(mainItem)) {
       motorCount++
       mainItem.motorLabel = `M-${motorCount}`
-      mainItem.quantity = motorCount // Motors show motor number instead
+      mainItem.quantity = motorCount  // Motors show motor number
     }
 
-    // FIX #5: Intelligent sub-item lettering
-    // Pair BLOWER + MOTOR together (BL0115D-15 + M-15 → A + AA, B + BA, C + CA)
+    // FIX #5: Correct sub-item lettering with blower+motor pairing
     const subItems = masterItem.sub_components
     let subLetter = 'A'
     let i = 0
@@ -143,36 +133,31 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
       const currentSub = subItems[i]
       const nextSub = subItems[i + 1]
       
-      // Check if this is BLOWER + MOTOR pair
+      // FIX #5: Check if BLOWER + MOTOR pair
       const isBlowerMotorPair = 
         currentSub.description.toUpperCase().includes('BLOWER') &&
         nextSub && 
-        (nextSub.description.toUpperCase().includes('MOTOR') || nextSub.part_num.startsWith('M-') || nextSub.part_num === 'M')
+        (nextSub.description.toUpperCase().includes('MOTOR') || 
+         nextSub.part_num.startsWith('M-') || 
+         nextSub.part_num === 'M')
       
       if (isBlowerMotorPair) {
-        // Add blower with letter (A, B, C...)
+        // Add blower with single letter (A, B, C...)
         const blowerItem = createScheduleItem(
           currentSub,
           projectItemNumber.toString(),
           subLetter,
-          '', // No quantity for sub-items
+          quoteItem.quantity || 1,
           voltage,
           true
         )
         scheduleItems.push(blowerItem)
         
-        // Track blower occurrence
-        if (!occurrenceTracker[currentSub.part_num]) {
-          occurrenceTracker[currentSub.part_num] = 0
-        }
-        occurrenceTracker[currentSub.part_num]++
-        blowerItem.quantity = occurrenceTracker[currentSub.part_num]
-        
         // Add motor with double letter (AA, BA, CA...)
         const motorItem = createScheduleItem(
           nextSub,
           projectItemNumber.toString(),
-          subLetter + 'A', // FIX #5: AA, BA, CA pattern
+          subLetter + 'A',  // FIX #5: AA, BA, CA pattern
           '',
           voltage,
           true
@@ -193,24 +178,17 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
           currentSub,
           projectItemNumber.toString(),
           subLetter,
-          '',
+          quoteItem.quantity || 1,
           voltage,
           true
         )
         
         scheduleItems.push(subItem)
         
-        // Track occurrence for sub-items too
-        if (!occurrenceTracker[currentSub.part_num]) {
-          occurrenceTracker[currentSub.part_num] = 0
-        }
-        occurrenceTracker[currentSub.part_num]++
-        subItem.quantity = occurrenceTracker[currentSub.part_num]
-        
         if (isMotor(subItem)) {
           motorCount++
           subItem.motorLabel = `M-${motorCount}`
-          subItem.quantity = motorCount // Motors show motor count
+          subItem.quantity = motorCount
         }
         
         subLetter = String.fromCharCode(subLetter.charCodeAt(0) + 1)
@@ -227,6 +205,8 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
   }, 0)
 
   console.log(`\n✓ Generated: ${scheduleItems.length} rows, ${motorCount} motors, ${totalAmps.toFixed(2)} amps`)
+  console.log(`✓ Unique items: ${processedParts.size}`)
+  console.log(`✓ Duplicates skipped: ${quoteData.items.length - processedParts.size - notFoundItems.length - excludedItems.length}`)
   console.log(`✓ Not found: ${notFoundItems.length} items`)
   console.log(`✓ Excluded: ${excludedItems.length} items`)
 
@@ -243,16 +223,31 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
   }
 }
 
+/**
+ * FIX #6: More precise master list lookup
+ */
 function lookupMasterItem(partNumber: string): any {
+  // Try exact match first
   if ((masterListData as any)[partNumber]) {
+    console.log(`    Exact match: ${partNumber}`)
     return (masterListData as any)[partNumber]
   }
   
-  const basePartNum = partNumber.split('-')[0]
-  
+  // Try partial matches more carefully
+  // Priority 1: Exact prefix match (OT2-BL1A-C should NOT match OT2-BL1C16x10)
   for (const key of Object.keys(masterListData as any)) {
-    if (key === basePartNum || key.startsWith(basePartNum)) {
+    if (partNumber.startsWith(key) || key.startsWith(partNumber)) {
       console.log(`    Matched ${partNumber} → ${key}`)
+      return (masterListData as any)[key]
+    }
+  }
+  
+  // Priority 2: Base part number (only first segment before dash)
+  const basePartNum = partNumber.split('-')[0]
+  for (const key of Object.keys(masterListData as any)) {
+    const keyBase = key.split('-')[0]
+    if (basePartNum === keyBase && basePartNum.length >= 3) {
+      console.log(`    Base match ${partNumber} → ${key}`)
       return (masterListData as any)[key]
     }
   }
@@ -288,7 +283,7 @@ function createScheduleItem(
   return {
     itemNumber: subLetter ? `${projectItemNum}${subLetter}` : projectItemNum,
     partNumber: masterData.part_num,
-    quantity: quantity || (isSubComponent ? '' : '#'),
+    quantity: quantity || (isSubComponent ? 1 : 1),
     description: masterData.description,
     hp: masterData.hp || '-',
     phase: masterData.phase || '-',
