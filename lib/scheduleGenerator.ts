@@ -18,6 +18,18 @@ export interface ScheduleItem {
   reclaim: any
   galMin: any
   btuh: any
+  // Work Distribution - Plumbing & Mechanical
+  plumbSupplier: any
+  plumbErectors: any
+  plumbed: any
+  plumbEqRm: any
+  plumbTunnel: any
+  // Work Distribution - Electrical
+  elecSupplier: any
+  elecErectors: any
+  elecPlumbed: any
+  elecEqRm: any
+  elecTunnel: any
   isSubComponent: boolean
   motorLabel?: string
 }
@@ -297,6 +309,17 @@ function createScheduleItem(
     reclaim: masterData.reclaim || null,
     galMin: masterData.gal_min || null,
     btuh: masterData.btuh || null,
+    // Work Distribution columns (empty by default - filled during installation)
+    plumbSupplier: null,
+    plumbErectors: null,
+    plumbed: null,
+    plumbEqRm: null,
+    plumbTunnel: null,
+    elecSupplier: null,
+    elecErectors: null,
+    elecPlumbed: null,
+    elecEqRm: null,
+    elecTunnel: null,
     isSubComponent,
   }
 }
