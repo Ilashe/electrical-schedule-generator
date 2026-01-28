@@ -27,20 +27,10 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
     { width: 10 },  // O - Reclaim
     { width: 10 },  // P - Gal/Min
     { width: 10 },  // Q - BTUH
-    { width: 10 },  // R - Plumb Supplier
-    { width: 10 },  // S - Plumb Erectors
-    { width: 10 },  // T - Plumbed
-    { width: 10 },  // U - Plumb Eq. Rm.
-    { width: 10 },  // V - Plumb Tunnel
-    { width: 10 },  // W - Elec Supplier
-    { width: 10 },  // X - Elec Erectors
-    { width: 10 },  // Y - Elec Plumbed
-    { width: 10 },  // Z - Elec Eq. Rm.
-    { width: 10 },  // AA - Elec Tunnel
   ]
 
   // Title row
-  worksheet.mergeCells('A1:AA1')
+  worksheet.mergeCells('A1:Q1')
   const titleCell = worksheet.getCell('A1')
   titleCell.value = `${schedule.projectName.toUpperCase()} - SCHEDULE REV 0`
   titleCell.font = { bold: true, size: 14 }
@@ -57,12 +47,6 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
   equipReqCell.value = 'EQUIPMENT REQUIREMENTS '
   equipReqCell.font = { bold: true, size: 12 }
   equipReqCell.alignment = { horizontal: 'center' }
-  
-  worksheet.mergeCells('R3:AA3')
-  const workDistCell = worksheet.getCell('R3')
-  workDistCell.value = 'WORK DISTRIBUTION'
-  workDistCell.font = { bold: true, size: 12 }
-  workDistCell.alignment = { horizontal: 'center' }
 
   // Row 5 headers
   worksheet.mergeCells('G5:K5')
@@ -89,26 +73,12 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
   worksheet.getCell('Q5').value = 'GAS'
   worksheet.getCell('Q5').font = { bold: true }
   worksheet.getCell('Q5').alignment = { horizontal: 'center' }
-  
-  worksheet.mergeCells('R5:V5')
-  const plumbMechCell = worksheet.getCell('R5')
-  plumbMechCell.value = 'PLUMBING & MECHANICAL'
-  plumbMechCell.font = { bold: true }
-  plumbMechCell.alignment = { horizontal: 'center' }
-  
-  worksheet.mergeCells('W5:AA5')
-  const elecWorkCell = worksheet.getCell('W5')
-  elecWorkCell.value = 'ELECTRICAL'
-  elecWorkCell.font = { bold: true }
-  elecWorkCell.alignment = { horizontal: 'center' }
 
   // Column headers (Row 6)
   const headers = [
     '', 'PROJECT ITEM #', '', 'PART #', '#', 'DESCRIPTION',
     'HP', 'PHASE', 'VOLTS', 'AMPS', 'C.B.', 'PORT',
-    'COLD', 'HOT', 'RECLAIM', 'GAL/MIN', '(BTUH)',
-    'SUPPLIER', 'ERECTORS', 'PLUMBED', 'EQ. RM.', 'TUNNEL',
-    'SUPPLIER', 'ERECTORS', 'PLUMBED', 'EQ. RM.', 'TUNNEL'
+    'COLD', 'HOT', 'RECLAIM', 'GAL/MIN', '(BTUH)'
   ]
 
   headers.forEach((header, index) => {
@@ -161,7 +131,7 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
     // Column F: Description
     row.getCell(6).value = item.description
 
-    // Columns G-AA: Equipment specs
+    // Columns G-Q: Equipment specs
     row.getCell(7).value = item.hp          // HP
     row.getCell(8).value = item.phase       // Phase
     row.getCell(9).value = item.volts       // Volts
@@ -173,18 +143,6 @@ export async function createExcelFile(schedule: Schedule, country: string): Prom
     row.getCell(15).value = item.reclaim    // Reclaim
     row.getCell(16).value = item.galMin     // Gal/Min
     row.getCell(17).value = item.btuh       // BTUH
-    // Work Distribution - Plumbing & Mechanical
-    row.getCell(18).value = item.plumbSupplier   // R
-    row.getCell(19).value = item.plumbErectors   // S
-    row.getCell(20).value = item.plumbed         // T
-    row.getCell(21).value = item.plumbEqRm       // U
-    row.getCell(22).value = item.plumbTunnel     // V
-    // Work Distribution - Electrical
-    row.getCell(23).value = item.elecSupplier    // W
-    row.getCell(24).value = item.elecErectors    // X
-    row.getCell(25).value = item.elecPlumbed     // Y
-    row.getCell(26).value = item.elecEqRm        // Z
-    row.getCell(27).value = item.elecTunnel      // AA
 
     // Apply borders to all cells
     row.eachCell((cell, colNumber) => {

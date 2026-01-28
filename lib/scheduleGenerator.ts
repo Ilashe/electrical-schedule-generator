@@ -18,18 +18,6 @@ export interface ScheduleItem {
   reclaim: any
   galMin: any
   btuh: any
-  // Work Distribution - Plumbing & Mechanical
-  plumbSupplier: any
-  plumbErectors: any
-  plumbed: any
-  plumbEqRm: any
-  plumbTunnel: any
-  // Work Distribution - Electrical
-  elecSupplier: any
-  elecErectors: any
-  elecPlumbed: any
-  elecEqRm: any
-  elecTunnel: any
   isSubComponent: boolean
   motorLabel?: string
 }
@@ -56,6 +44,10 @@ const EXCLUDED_ITEMS = [
   'WA2F-0318',
   'WA1M-72-510-5220-CORE',
   'WA1M-00-510-5220-SS-CL-BL',
+  'RB1AMC-23-13',
+  'RB1AMA-23-13',
+  'TR1HB-82',
+  'TR1-BUN-RED',
   'CB1AMA-50-13-S-CL',
   'CB1AMC-50-13',
   'CB1AMA-23-13-S-CL',
@@ -66,22 +58,22 @@ const EXCLUDED_ITEMS = [
   'DISPENSEIT-10-INJ-KIT',
   'COMP-FLTR-REG-3-4IN',
   'COMP-PRESS-GAUGE',
-  'RB1AMC-23-13',  // Cores
-  'RB1AMA-23-13',  // Brushes
-  'TR1HB-82',      // Cores
-  'TR1-BUN-RED',   // Brushes
 ]
 
 function shouldExcludeItem(partNumber: string): boolean {
   return EXCLUDED_ITEMS.some(excluded => partNumber.includes(excluded))
 }
 
+/**
+ * COMPLETE SOLUTION - Based on Genius Car Wash analysis
+ */
 export async function generateSchedule(quoteData: QuoteData, country: string): Promise<Schedule> {
   const voltage = (voltageMap as any)[country] || (voltageMap as any)['USA']
   const scheduleItems: ScheduleItem[] = []
   const notFoundItems: string[] = []
   const excludedItems: string[] = []
-  const processedParts: Set<string> = new Set() // FIX #1: Track to skip duplicates
+  const processedParts: Set<string> = new Set()
+  const partOccurrences: { [key: string]: number } = {} // Track occurrences for duplicates
   let motorCount = 0
   let projectItemNumber = 1
 
@@ -90,19 +82,19 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
   for (const quoteItem of quoteData.items) {
     console.log(`\nProcessing: ${quoteItem.partNumber}`)
     
-    // FIX #1: Skip duplicates - only first occurrence
-    if (processedParts.has(quoteItem.partNumber)) {
-      console.log(`  ⏭️  SKIPPING DUPLICATE: ${quoteItem.partNumber}`)
-      continue
-    }
-    
+    // Check if excluded
     if (shouldExcludeItem(quoteItem.partNumber)) {
       console.log(`  ❌ EXCLUDED: ${quoteItem.partNumber}`)
       excludedItems.push(`${quoteItem.partNumber} - ${quoteItem.description}`)
       continue
     }
 
-    // FIX #6: Better master list lookup
+    // Skip duplicates UNLESS quote qty > 1
+    if (processedParts.has(quoteItem.partNumber) && quoteItem.quantity <= 1) {
+      console.log(`  ⏭️  SKIPPING DUPLICATE (Qty=1): ${quoteItem.partNumber}`)
+      continue
+    }
+
     const masterItem = lookupMasterItem(quoteItem.partNumber)
     
     if (!masterItem) {
@@ -114,6 +106,14 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     console.log(`  ✓ Found: ${masterItem.main.description}`)
     console.log(`    Sub-components: ${masterItem.sub_components.length}`)
 
+    // Track occurrence for items with Qty > 1
+    const mainPartNum = masterItem.main.part_num
+    if (!partOccurrences[mainPartNum]) {
+      partOccurrences[mainPartNum] = 0
+    }
+    partOccurrences[mainPartNum]++
+    const occurrence = partOccurrences[mainPartNum]
+
     // Mark as processed
     processedParts.add(quoteItem.partNumber)
 
@@ -122,91 +122,32 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
       masterItem.main,
       projectItemNumber.toString(),
       '',
-      quoteItem.quantity || 1,  // FIX #4: Use quote quantity
+      occurrence,
       voltage,
       false
     )
     
     scheduleItems.push(mainItem)
 
-    // FIX #4: Motors get motor label, but keep original quantity
     if (isMotor(mainItem)) {
       motorCount++
       mainItem.motorLabel = `M-${motorCount}`
-      mainItem.quantity = motorCount  // Motors show motor number
+      mainItem.quantity = motorCount
     }
 
-    // FIX #5: Correct sub-item lettering with blower+motor pairing
-    const subItems = masterItem.sub_components
-    let subLetter = 'A'
-    let i = 0
-    
-    while (i < subItems.length) {
-      const currentSub = subItems[i]
-      const nextSub = subItems[i + 1]
-      
-      // FIX #5: Check if BLOWER + MOTOR pair
-      const isBlowerMotorPair = 
-        currentSub.description.toUpperCase().includes('BLOWER') &&
-        nextSub && 
-        (nextSub.description.toUpperCase().includes('MOTOR') || 
-         nextSub.part_num.startsWith('M-') || 
-         nextSub.part_num === 'M')
-      
-      if (isBlowerMotorPair) {
-        // Add blower with single letter (A, B, C...)
-        const blowerItem = createScheduleItem(
-          currentSub,
-          projectItemNumber.toString(),
-          subLetter,
-          quoteItem.quantity || 1,
-          voltage,
-          true
-        )
-        scheduleItems.push(blowerItem)
-        
-        // Add motor with double letter (AA, BA, CA...)
-        const motorItem = createScheduleItem(
-          nextSub,
-          projectItemNumber.toString(),
-          subLetter + 'A',  // FIX #5: AA, BA, CA pattern
-          '',
-          voltage,
-          true
-        )
-        scheduleItems.push(motorItem)
-        
-        if (isMotor(motorItem)) {
-          motorCount++
-          motorItem.motorLabel = `M-${motorCount}`
-          motorItem.quantity = motorCount
-        }
-        
-        subLetter = String.fromCharCode(subLetter.charCodeAt(0) + 1)
-        i += 2 // Skip both blower and motor
-      } else {
-        // Regular sub-item
-        const subItem = createScheduleItem(
-          currentSub,
-          projectItemNumber.toString(),
-          subLetter,
-          quoteItem.quantity || 1,
-          voltage,
-          true
-        )
-        
-        scheduleItems.push(subItem)
-        
-        if (isMotor(subItem)) {
-          motorCount++
-          subItem.motorLabel = `M-${motorCount}`
-          subItem.quantity = motorCount
-        }
-        
-        subLetter = String.fromCharCode(subLetter.charCodeAt(0) + 1)
-        i++
+    // SMART NESTING - Process sub-components with intelligent hierarchy
+    processSubComponentsWithNesting(
+      masterItem.sub_components,
+      projectItemNumber,
+      voltage,
+      scheduleItems,
+      (motor) => {
+        motorCount++
+        motor.motorLabel = `M-${motorCount}`
+        motor.quantity = motorCount
+        return motorCount
       }
-    }
+    )
 
     projectItemNumber++
   }
@@ -218,9 +159,8 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
 
   console.log(`\n✓ Generated: ${scheduleItems.length} rows, ${motorCount} motors, ${totalAmps.toFixed(2)} amps`)
   console.log(`✓ Unique items: ${processedParts.size}`)
-  console.log(`✓ Duplicates skipped: ${quoteData.items.length - processedParts.size - notFoundItems.length - excludedItems.length}`)
-  console.log(`✓ Not found: ${notFoundItems.length} items`)
-  console.log(`✓ Excluded: ${excludedItems.length} items`)
+  console.log(`✓ Not found: ${notFoundItems.length}`)
+  console.log(`✓ Excluded: ${excludedItems.length}`)
 
   return {
     projectName: quoteData.projectName,
@@ -236,40 +176,190 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
 }
 
 /**
- * FIX #6: More precise master list lookup
+ * SMART NESTING LOGIC - Based on Genius Car Wash pattern analysis
+ */
+function processSubComponentsWithNesting(
+  subItems: any[],
+  projectItemNum: number,
+  voltage: any,
+  scheduleItems: ScheduleItem[],
+  registerMotor: (item: ScheduleItem) => number
+): void {
+  let currentLetter = 'A'
+  let i = 0
+
+  while (i < subItems.length) {
+    const item = subItems[i]
+    const nextItems = subItems.slice(i + 1, Math.min(i + 10, subItems.length))
+    
+    // Detect children based on smart rules
+    const children = detectChildren(item, nextItems)
+    
+    if (children.length > 0) {
+      // Add parent
+      const parentItem = createScheduleItem(
+        item,
+        projectItemNum.toString(),
+        currentLetter,
+        1,
+        voltage,
+        true
+      )
+      scheduleItems.push(parentItem)
+      
+      if (isMotor(parentItem)) {
+        registerMotor(parentItem)
+      }
+      
+      // Add children with nested letters
+      let childLetter = currentLetter + 'A'
+      for (const child of children) {
+        const childItem = createScheduleItem(
+          child,
+          projectItemNum.toString(),
+          childLetter,
+          '',
+          voltage,
+          true
+        )
+        scheduleItems.push(childItem)
+        
+        if (isMotor(childItem)) {
+          registerMotor(childItem)
+        }
+        
+        // Increment child letter (AA → AB → AC...)
+        childLetter = incrementNestedLetter(childLetter)
+      }
+      
+      i += 1 + children.length
+    } else {
+      // Standalone item
+      const standaloneItem = createScheduleItem(
+        item,
+        projectItemNum.toString(),
+        currentLetter,
+        1,
+        voltage,
+        true
+      )
+      scheduleItems.push(standaloneItem)
+      
+      if (isMotor(standaloneItem)) {
+        registerMotor(standaloneItem)
+      }
+      
+      i++
+    }
+    
+    // Increment to next letter (A → B → C...)
+    currentLetter = String.fromCharCode(currentLetter.charCodeAt(0) + 1)
+  }
+}
+
+/**
+ * Detect which items are children of a parent based on patterns
+ */
+function detectChildren(parent: any, nextItems: any[]): any[] {
+  const children: any[] = []
+  const parentDesc = parent.description.toUpperCase()
+  const parentPart = parent.part_num.toUpperCase()
+  
+  // RULE 1: BLOWER + MOTOR(s)
+  if (parentDesc.includes('BLOWER') || parentPart.includes('BL0')) {
+    if (nextItems[0] && isMotorItem(nextItems[0])) {
+      children.push(nextItems[0])
+    }
+    return children
+  }
+  
+  // RULE 2: PANEL/CONTROL + SOLENOID(s)
+  if (parentDesc.includes('PANEL') || parentDesc.includes('CONTROL') || parentPart.includes('WA1P')) {
+    for (const next of nextItems) {
+      if (isSolenoid(next)) {
+        children.push(next)
+      } else {
+        break
+      }
+    }
+    return children
+  }
+  
+  // RULE 3: ELECTRIC items (WA1-EL, CB2-EL) + MOTOR(s)
+  if (parentDesc.includes('-EL') || parentDesc.includes('ELECTRIC') || parentPart.includes('-EL')) {
+    for (const next of nextItems) {
+      if (isMotorItem(next)) {
+        children.push(next)
+      } else {
+        break
+      }
+    }
+    return children
+  }
+  
+  // RULE 4: WRAP items with MOTOR(s)
+  if (parentDesc.includes('WRAP') && parentPart.startsWith('WA')) {
+    for (const next of nextItems) {
+      if (isMotorItem(next)) {
+        children.push(next)
+      } else {
+        break
+      }
+    }
+    return children
+  }
+  
+  return children
+}
+
+/**
+ * Increment nested letter: AA → AB → AC, ACA → ACB → ACC
+ */
+function incrementNestedLetter(letter: string): string {
+  const lastChar = letter[letter.length - 1]
+  const prefix = letter.slice(0, -1)
+  
+  if (lastChar === 'Z') {
+    return prefix + 'AA'  // Overflow case (rare)
+  }
+  
+  return prefix + String.fromCharCode(lastChar.charCodeAt(0) + 1)
+}
+
+/**
+ * Better master list lookup
  */
 function lookupMasterItem(partNumber: string): any {
-  // Try exact match first
+  // Try exact match
   if ((masterListData as any)[partNumber]) {
-    console.log(`    Exact match: ${partNumber}`)
+    console.log(`    ✓ Exact match: ${partNumber}`)
     return (masterListData as any)[partNumber]
   }
   
-  // Try partial matches more carefully
-  // Priority 1: Exact prefix match (OT2-BL1A-C should NOT match OT2-BL1C16x10)
+  // Try with base part (before first dash)
+  const basePart = partNumber.split('-')[0]
+  
   for (const key of Object.keys(masterListData as any)) {
-    if (partNumber.startsWith(key) || key.startsWith(partNumber)) {
-      console.log(`    Matched ${partNumber} → ${key}`)
+    // Check if key starts with the part number
+    if (key.startsWith(partNumber) || partNumber.startsWith(key)) {
+      console.log(`    ✓ Prefix match: ${partNumber} → ${key}`)
       return (masterListData as any)[key]
     }
   }
   
-  // Priority 2: Base part number (only first segment before dash)
-  const basePartNum = partNumber.split('-')[0]
-  for (const key of Object.keys(masterListData as any)) {
-    const keyBase = key.split('-')[0]
-    if (basePartNum === keyBase && basePartNum.length >= 3) {
-      console.log(`    Base match ${partNumber} → ${key}`)
-      return (masterListData as any)[key]
+  // Try base match (3+ chars only to avoid false matches)
+  if (basePart.length >= 3) {
+    for (const key of Object.keys(masterListData as any)) {
+      if (key.split('-')[0] === basePart) {
+        console.log(`    ✓ Base match: ${partNumber} → ${key}`)
+        return (masterListData as any)[key]
+      }
     }
   }
   
   return null
 }
 
-/**
- * FIX #3: Include ALL columns from master list
- */
 function createScheduleItem(
   masterData: any,
   projectItemNum: string,
@@ -295,39 +385,38 @@ function createScheduleItem(
   return {
     itemNumber: subLetter ? `${projectItemNum}${subLetter}` : projectItemNum,
     partNumber: masterData.part_num,
-    quantity: quantity || (isSubComponent ? 1 : 1),
+    quantity: quantity || 1,
     description: masterData.description,
     hp: masterData.hp || '-',
     phase: masterData.phase || '-',
     volts: volts || '-',
     amps: amps || '-',
     cb: masterData.cb || '-',
-    // FIX #3: Include all columns
     port: masterData.port || null,
     cold: masterData.cold || null,
     hot: masterData.hot || null,
     reclaim: masterData.reclaim || null,
     galMin: masterData.gal_min || null,
     btuh: masterData.btuh || null,
-    // Work Distribution columns (empty by default - filled during installation)
-    plumbSupplier: null,
-    plumbErectors: null,
-    plumbed: null,
-    plumbEqRm: null,
-    plumbTunnel: null,
-    elecSupplier: null,
-    elecErectors: null,
-    elecPlumbed: null,
-    elecEqRm: null,
-    elecTunnel: null,
     isSubComponent,
   }
 }
 
 function isMotor(item: ScheduleItem): boolean {
+  return isMotorItem({ description: item.description, hp: item.hp, part_num: item.partNumber })
+}
+
+function isMotorItem(item: any): boolean {
   const desc = item.description.toUpperCase()
   const hasMotorKeyword = desc.includes('MOTOR') || desc.includes('GEARMOTOR')
   const hasHP = item.hp && item.hp !== '-' && !isNaN(parseFloat(String(item.hp)))
   
   return hasMotorKeyword || hasHP
+}
+
+function isSolenoid(item: any): boolean {
+  const part = item.part_num.toUpperCase()
+  const desc = item.description.toUpperCase()
+  
+  return part === 'SOL' || desc.includes('SOLENOID')
 }
