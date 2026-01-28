@@ -72,7 +72,6 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
   const scheduleItems: ScheduleItem[] = []
   const notFoundItems: string[] = []
   const excludedItems: string[] = []
-  const processedParts: Set<string> = new Set()
   const partOccurrences: { [key: string]: number } = {} // Track occurrences for duplicates
   let motorCount = 0
   let projectItemNumber = 1
@@ -86,12 +85,6 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     if (shouldExcludeItem(quoteItem.partNumber)) {
       console.log(`  ❌ EXCLUDED: ${quoteItem.partNumber}`)
       excludedItems.push(`${quoteItem.partNumber} - ${quoteItem.description}`)
-      continue
-    }
-
-    // Skip duplicates UNLESS quote qty > 1
-    if (processedParts.has(quoteItem.partNumber) && quoteItem.quantity <= 1) {
-      console.log(`  ⏭️  SKIPPING DUPLICATE (Qty=1): ${quoteItem.partNumber}`)
       continue
     }
 
@@ -113,9 +106,6 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
     }
     partOccurrences[mainPartNum]++
     const occurrence = partOccurrences[mainPartNum]
-
-    // Mark as processed
-    processedParts.add(quoteItem.partNumber)
 
     // Add main item
     const mainItem = createScheduleItem(
@@ -158,7 +148,7 @@ export async function generateSchedule(quoteData: QuoteData, country: string): P
   }, 0)
 
   console.log(`\n✓ Generated: ${scheduleItems.length} rows, ${motorCount} motors, ${totalAmps.toFixed(2)} amps`)
-  console.log(`✓ Unique items: ${processedParts.size}`)
+  console.log(`✓ Total quote items: ${quoteData.items.length}`)
   console.log(`✓ Not found: ${notFoundItems.length}`)
   console.log(`✓ Excluded: ${excludedItems.length}`)
 
@@ -327,36 +317,16 @@ function incrementNestedLetter(letter: string): string {
 }
 
 /**
- * Better master list lookup
+ * EXACT match only - no fuzzy matching
  */
 function lookupMasterItem(partNumber: string): any {
-  // Try exact match
+  // ONLY exact match - nothing else
   if ((masterListData as any)[partNumber]) {
     console.log(`    ✓ Exact match: ${partNumber}`)
     return (masterListData as any)[partNumber]
   }
   
-  // Try with base part (before first dash)
-  const basePart = partNumber.split('-')[0]
-  
-  for (const key of Object.keys(masterListData as any)) {
-    // Check if key starts with the part number
-    if (key.startsWith(partNumber) || partNumber.startsWith(key)) {
-      console.log(`    ✓ Prefix match: ${partNumber} → ${key}`)
-      return (masterListData as any)[key]
-    }
-  }
-  
-  // Try base match (3+ chars only to avoid false matches)
-  if (basePart.length >= 3) {
-    for (const key of Object.keys(masterListData as any)) {
-      if (key.split('-')[0] === basePart) {
-        console.log(`    ✓ Base match: ${partNumber} → ${key}`)
-        return (masterListData as any)[key]
-      }
-    }
-  }
-  
+  // Not found
   return null
 }
 
